@@ -1,8 +1,9 @@
 import sys
-from typing import List, Union  # Added Union
+from typing import List, Union
 from openai import AsyncOpenAI
 from loguru import logger
 from ..core.config import settings
+from .cache import cache
 
 # Configure Loguru for JSON output to stdout
 logger.remove()
@@ -27,6 +28,12 @@ async def get_embeddings(texts: Union[str, List[str]], model: str = "text-embedd
         Exception: If the OpenAI API call fails.
     """
     try:
+        # Check cache first
+        cached_embeddings = await cache.get_embeddings(texts, model)
+        if cached_embeddings is not None:
+            logger.info("Retrieved embeddings from cache.")
+            return cached_embeddings
+
         is_single_text = isinstance(texts, str)
         input_data = [texts] if is_single_text else texts
 
@@ -41,18 +48,28 @@ async def get_embeddings(texts: Union[str, List[str]], model: str = "text-embedd
         )
 
         embeddings = [data.embedding for data in response.data]
-        logger.info(f"Successfully retrieved {len(embeddings)} embedding(s).")
+        result = embeddings[0] if is_single_text else embeddings
 
-        return embeddings[0] if is_single_text else embeddings
+        # Cache the embeddings
+        await cache.set_embeddings(texts, model, result)
+        logger.info(f"Successfully retrieved and cached {len(embeddings)} embedding(s).")
+
+        return result
     except Exception as e:
         logger.exception(f"Error getting embeddings with model {model}.")
         raise  # Re-raise the exception to be handled upstream
 
 async def generate_summary(text: str, max_words: int = 30) -> str:
     try:
+        # Check cache first
+        cached_summary = await cache.get_summary(text, max_words)
+        if cached_summary is not None:
+            logger.info("Retrieved summary from cache.")
+            return cached_summary
+
         logger.info("Generating summary for text.", text_length=len(text))
         response = await client.chat.completions.create(
-            model="gpt-4.1",  # Changed model from gpt-4.1
+            model="gpt-4.1",
             messages=[
                 {"role": "system", "content": f"Summarize the following text in approximately {max_words} words. Identify the main topic or provide a concise title as part of the summary."},
                 {"role": "user", "content": text}
@@ -61,7 +78,11 @@ async def generate_summary(text: str, max_words: int = 30) -> str:
             temperature=0.5,
         )
         summary = response.choices[0].message.content.strip()
-        logger.info("Summary generated successfully.", summary_length=len(summary))
+        
+        # Cache the summary
+        await cache.set_summary(text, max_words, summary)
+        logger.info("Summary generated and cached successfully.", summary_length=len(summary))
+        
         return summary
     except Exception as e:
         logger.exception("Error during summarization.")

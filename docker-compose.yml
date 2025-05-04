@@ -7,6 +7,10 @@ services:
       - "8000:8000"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
     volumes:
       - ./src:/app/src
     healthcheck:
@@ -14,3 +18,14 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel warning
+
+volumes:
+  redis_data:

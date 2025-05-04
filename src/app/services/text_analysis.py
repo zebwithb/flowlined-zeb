@@ -2,6 +2,7 @@ import sys
 from typing import List, Union
 from openai import AsyncOpenAI
 from loguru import logger
+import numpy as np
 from ..core.config import settings
 from .cache import cache
 
@@ -130,12 +131,25 @@ async def find_most_similar(query: str, texts: List[str]) -> tuple[str, float]:
         raise
 
 def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
-    norm1 = sum(a * a for a in vec1) ** 0.5
-    norm2 = sum(b * b for b in vec2) ** 0.5
+    """Calculates cosine similarity between two vectors using NumPy."""
+    # Convert lists to NumPy arrays
+    v1 = np.array(vec1, dtype=np.float32)
+    v2 = np.array(vec2, dtype=np.float32)
+
+    # Calculate norms
+    norm1 = np.linalg.norm(v1)
+    norm2 = np.linalg.norm(v2)
+
+    # Check for zero vectors
     if norm1 == 0 or norm2 == 0:
         logger.warning("Attempted cosine similarity with zero vector.")
         return 0.0
-    dot_product = sum(a * b for a, b in zip(vec1, vec2))
+
+    # Calculate dot product
+    dot_product = np.dot(v1, v2)
+
+    # Calculate similarity
     similarity = dot_product / (norm1 * norm2)
+
     # Clamp value due to potential floating point inaccuracies
-    return max(-1.0, min(1.0, similarity))
+    return float(np.clip(similarity, -1.0, 1.0))

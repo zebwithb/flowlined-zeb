@@ -1,8 +1,9 @@
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from src.app import app
 from src.app.services import text_analysis, cache
+import numpy as np # Import numpy for cosine similarity calculation if needed in test
 
 client = TestClient(app)
 
@@ -15,28 +16,94 @@ def mock_openai(mocker):
     mock_completion.choices = [MagicMock(message=MagicMock(content="Mocked Summary"))]
     mocker.patch.object(text_analysis.client.chat.completions, 'create', return_value=mock_completion)
 
-    mock_embedding_response = MagicMock()
-    mock_embedding_response.data = [
-        MagicMock(embedding=[0.1] * 1536),
-        MagicMock(embedding=[0.1] * 1536),
-        MagicMock(embedding=[0.2] * 1536),
-        MagicMock(embedding=[0.3] * 1536)
-    ]
     async def mock_create_embeddings(*args, **kwargs):
         input_data = kwargs.get('input', [])
         if isinstance(input_data, str):
-            return MagicMock(data=[MagicMock(embedding=[0.1] * 1536)])
+            # Specific query for similarity logic test
+            if input_data == "Query for logic test":
+                # Use a simple distinct vector
+                return MagicMock(data=[MagicMock(embedding=[1.0, 0.0] + [0.0] * 1534)])
+            # Default for single string input (e.g., from test_similarity_endpoint)
+            elif input_data == "Hello world":
+                 return MagicMock(data=[MagicMock(embedding=[0.1] * 1536)])
+            # Default for other single string inputs
+            return MagicMock(data=[MagicMock(embedding=[0.5] * 1536)])
+
         elif isinstance(input_data, list):
-            if len(input_data) == 3:
+            # Specific texts for similarity logic test
+            if input_data == ["Text A", "Text B", "Text C"]:
+                # Return distinct vectors for comparison
                 return MagicMock(data=[
-                    MagicMock(embedding=[0.1] * 1536),
+                    MagicMock(embedding=[0.9, 0.1] + [0.0] * 1534), # High similarity to query [1.0, 0.0]
+                    MagicMock(embedding=[0.0, 1.0] + [0.0] * 1534), # Low similarity
+                    MagicMock(embedding=[0.5, 0.5] + [0.0] * 1534)  # Medium similarity
+                ])
+            # Existing logic for len == 3 (used in test_similarity_endpoint)
+            elif input_data == ["Hello world", "Goodbye world", "Something completely different"]:
+                 return MagicMock(data=[
+                    MagicMock(embedding=[0.1] * 1536), # Matches query embedding
                     MagicMock(embedding=[0.2] * 1536),
                     MagicMock(embedding=[0.3] * 1536)
                 ])
+            # Default for list input
             return MagicMock(data=[MagicMock(embedding=[0.9] * 1536)] * len(input_data))
         return MagicMock(data=[])
 
     mocker.patch.object(text_analysis.client.embeddings, 'create', side_effect=mock_create_embeddings)
+
+    # Return the mocker instance itself or specific mocks if needed by tests
+    # Returning mocker is standard practice if tests don't need direct access to the mocks created here
+    return mocker
+
+
+# --- New Tests ---
+
+def test_similarity_logic(mock_openai, mock_redis_cache):
+    """Tests if the similarity endpoint correctly identifies the closest text based on mocked embeddings."""
+    query = "Query for logic test"
+    texts = ["Text A", "Text B", "Text C"]
+    response = client.post(
+        "/v1/similarity",
+        json={"query": query, "texts": texts}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["closest_text"] == "Text A"
+
+    # Verify mocks were called as expected
+    assert text_analysis.client.embeddings.create.call_count == 2 # Once for query, once for texts
+    mock_redis_cache["get_embeddings"].assert_called()
+    mock_redis_cache["set_embeddings"].assert_called()
+
+
+def test_summarize_openai_error(mocker, mock_redis_cache):
+    """Tests the summarize endpoint response when the OpenAI API call fails."""
+    # Override the autouse mock_openai for this specific test
+    mocker.patch.object(text_analysis.client.chat.completions, 'create', side_effect=Exception("API Error"))
+
+    response = client.post(
+        "/v1/summarize",
+        json={"text": "This text summary will fail."}
+    )
+    assert response.status_code == 500
+    assert "API Error" in response.json()["detail"]
+    mock_redis_cache["get_summary"].assert_called_once() # Should still check cache first
+    mock_redis_cache["set_summary"].assert_not_called() # Should not cache on failure
+
+
+def test_similarity_openai_error(mocker, mock_redis_cache):
+    """Tests the similarity endpoint response when the OpenAI embedding API call fails."""
+    # Override the autouse mock_openai for this specific test
+    mocker.patch.object(text_analysis.client.embeddings, 'create', side_effect=Exception("Embedding API Error"))
+
+    response = client.post(
+        "/v1/similarity",
+        json={"query": "Query", "texts": ["Text 1", "Text 2"]}
+    )
+    assert response.status_code == 500
+    assert "Embedding API Error" in response.json()["detail"]
+    mock_redis_cache["get_embeddings"].assert_called() # Should still check cache first
+    mock_redis_cache["set_embeddings"].assert_not_called() # Should not cache on failure
 
     return mocker
 
